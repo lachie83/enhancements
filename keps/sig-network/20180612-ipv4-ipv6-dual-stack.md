@@ -15,7 +15,7 @@ approvers:
   - "thockin@"
 editor: TBD
 creation-date: 2018-05-21
-last-updated: 2019-05-02
+last-updated: 2019-06-17
 status: implementable
 
 ---
@@ -38,6 +38,8 @@ Table of Contents
          * [Maintaining Compatible Interworking between Old and New Clients](#maintaining-compatible-interworking-between-old-and-new-clients)
             * [V1 to Core (Internal) Conversion](#v1-to-core-internal-conversion)
             * [Core (Internal) to V1 Conversion](#core-internal-to-v1-conversion)
+            * [Awareness of Multiple NodeCIDRs per Node](#awareness-of-multiple-nodecidrs-per-node)
+            * [Awareness of Multiple ClusterCIDRs](#awareness-of-multiple-clustercidrs)
          * [kubelet Startup Configuration for Dual-Stack Pod CIDRs](#kubelet-startup-configuration-for-dual-stack-pod-cidrs)
          * [kube-proxy Startup Configuration for Dual-Stack Pod CIDRs](#kube-proxy-startup-configuration-for-dual-stack-pod-cidrs)
          * ['kubectl get pods -o wide' Command Display for Dual-Stack Pod Addresses](#kubectl-get-pods--o-wide-command-display-for-dual-stack-pod-addresses)
@@ -71,6 +73,10 @@ Table of Contents
       * [Cloud Provider Plugins Considerations](#cloud-provider-plugins-considerations)
          * [Multiple bind addresses configuration](#multiple-bind-addresses-configuration-1)
          * [Multiple cluster CIDRs configuration](#multiple-cluster-cidrs-configuration-1)
+      * [Apiserver considerations](#apiserver-considerations)
+         * [Multiple advertise-address configuration](#multiple-advertise-address-configuration)
+      * [Pod containerPort considerations](#pod-containerport-considerations)
+         * [Multiple containerPort configuration](#multiple-containerport-configuration)
       * [Container Environment Variables](#container-environment-variables)
       * [Kubeadm Support](#kubeadm-support)
          * [Kubeadm Configuration Options](#kubeadm-configuration-options)
@@ -139,7 +145,7 @@ In order to support dual-stack in Kubernetes clusters, Kubernetes needs to have 
 - Kubernetes needs to be made aware of multiple IPs per pod (limited to one IPv4 and one IPv6 address per pod maximum).
 - Link Local Addresses (LLAs) on a pod will remain implicit (Kubernetes will not display nor track these addresses).
 - For simplicity, only a single family of service IPs per cluster will be supported (i.e. service IPs are either all IPv4 or all IPv6).
-- Backend pods for a service can be dual stack.
+- Backend pods for a service can be dual stack (the user may choose which address family the container port will be exposed on)
 - Endpoints for a dual-stack backend pod will be represented as a dual-stack address pair (i.e. 1 IPv4/IPv6 endpoint per backend pod, rather than 2 single-family endpoints per backend pod)
 - Kube-proxy iptables mode needs to drive iptables and ip6tables in parallel. This is required, even though service IP support is single-family, so that Kubernetes services can be exposed to clients external to the cluster via both IPv4 and IPv6. Support includes:
   - Service IPs: Single family support (either all IPv4 or all IPv6 service IPs in a cluster)
@@ -164,11 +170,15 @@ Phase 1
 - kubenet multi-family support
 
 Phase 2
-- Multi-family services including kube-proxy
+- IPv4/IPv6 dual-stack support for services including kube-proxy
+   - Users will be able to create single-family services and specify whether they are IPv4 (default) or IPv6
+      - For backwards compat the service IP will be bound to first (*ONLY*) ClusterCIDR. User can change and bind to family (or CIDR?)
+   - Services can only attach and route to endpoints of the same address-family as the service
+   - The user can determine which address-family the container port will be exposed on
+   - kube-proxy will modify the corresponding iptables address-family based on the address-family of the service 
 - Working with a CNI provider to enable dual-stack support
 - Change kubelet prober to support multi-address
 - Update component flags to support multiple `--bind-address`
-
 
 - External dependencies, eg. cloud-provide, CNI, CRI, CoreDNS etc...
 
@@ -272,20 +282,23 @@ However, as a defensive coding measure and for future-proofing, the following AP
 ### Awareness of Multiple NodeCIDRs per Node
 As with PodIP, corresponding changes will need to be made to NodeCIDR. These changes are essentially the same as the aformentioned PodIP changes which create the pularalization of NodeCIDRs to a slice rather than a singular and making those changes across the internal representation and v1 with associated conversations.
 
+### Awareness of Multiple ClusterCIDRs
+As with PodIP, corresponding changes will need to be made to ClusterCIDR. These changes are essentially the same as the aformentioned PodIP changes which create the pularalization of ClusterCIDRs to a slice rather than a singular and making those changes across the internal representation and v1 with associated conversations.
 
 #### kubelet Startup Configuration for Dual-Stack Pod CIDRs
 The existing "--pod-cidr" option for the [kubelet startup configuration](https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/) will be modified to support multiple IP CIDRs in a comma-separated list (rather than a single IP string), i.e.:
 ```
   --pod-cidr  ipNetSlice   [IP CIDRs, comma separated list of CIDRs, Default: []]
 ```
-Only the first address of each IP family will be used; all others will be logged and ignored.
+At this stage the addresses will be validated to confirm that there is only single IPv4 CIDR and a IPv6 CIDR provided. All others will be logged and ignored.
 
 #### kube-proxy Startup Configuration for Dual-Stack Pod CIDRs
 The existing "cluster-cidr" option for the [kube-proxy startup configuration](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-proxy/) will be modified to support multiple cluster CIDRs in a comma-separated list (rather than a single IP string), i.e:
 ```
   --cluster-cidr  ipNetSlice   [IP CIDRs, comma separated list of CIDRs, Default: []]
 ```
-Only the first address of each IP family will be used; all others will be logged and ignored.
+At this stage the addresses will be validated to confirm that there is only single IPv4 CIDR and a IPv6 CIDR provided. All others will be logged and ignored.
+
 
 #### 'kubectl get pods -o wide' Command Display for Dual-Stack Pod Addresses
 The output for the 'kubectl get pods -o wide' command will need to be modified to display a comma-separated list of IPs for each pod, e.g.:
@@ -482,12 +495,13 @@ A new [kube-proxy configuration](https://kubernetes.io/docs/reference/command-li
 ```
   --cluster-cidr  ipNetSlice   (IP CIDRs, in a comma separated list, Default: [])
 ```
-Only the first CIDR for each IP family will be used; all others will be ignored.
+At this stage the addresses will be validated to confirm that there is only single IPv4 CIDR and a IPv6 CIDR provided. All others will be logged and ignored.
 
 ### CoreDNS Operation
 
 CoreDNS will need to make changes in order to support the plural form of endpoint addresses. Some other considerations of CoreDNS support for dual stack:
 
+- CoreDNS will need to listen on both address-families and attached to the addresses defined in the apiserver advertise-addresses 
 - Because service IPs will remain single-family, pods will continue to access the CoreDNS server via a single service IP. In other words, the nameserver entries in a pod's /etc/resolv.conf will typically be a single IPv4 or single IPv6 address, depending upon the IP family of the cluster's service CIDR.
 - Non-headless Kubernetes services: CoreDNS will resolve these services to either an IPv4 entry (A record) or an IPv6 entry (AAAA record), depending upon the IP family of the cluster's service CIDR.
 - Headless Kubernetes services: CoreDNS will resolve these services to either an IPv4 entry (A record), an IPv6 entry (AAAA record), or both, depending on the service's endpointFamily configuration (see [Configuration of Endpoint IP Family in Service Definitions](#configuration-of-endpoint-ip-family-in-service-definitions)).
@@ -509,11 +523,11 @@ The [NGINX ingress controller](https://github.com/kubernetes/ingress-nginx/blob/
 
 ### Load Balancer Operation
 
-As noted above, External load balancers that rely on Kubernetes services for load balancing functionality will only work with the IP family that matches the IP family of the cluster's service CIDR.
+As noted above, External load balancers that rely on Kubernetes services for load balancing functionality will only work with the IP family that matches the IP family of the cluster's service CIDR. The servie address-family binding is going to ensure that endpoints are matching the same-family as NodePorts however we may need an additional field to pass to the cloud provide to desinate the address-family type.
 
 #### Type ClusterIP
 
-The ClusterIP service type will be single stack, so for this case there will be no changes to the current load balancer config. The user has the option to create two load balancer IP resources, one for IPv6 and the other for IPv4, and associate both with the same application instances.
+The ClusterIP service type will be single stack, so for this case there will be no changes to the current load balancer config. The user has the option to create two load balancer IP resources, one for IPv6 and the other for IPv4, and associate both with the same application instances. The ClusterIP will be selected from the appropriate ClusterCIDR based on the address-family of the service.
 
 #### Type NodePort
 
@@ -541,9 +555,58 @@ The existing "--cluster-cidr" option for the [cloud-controller-manager](https://
 ```
   --cluster-cidr  ipNetSlice   (IP CIDRs, in a comma separated list, Default: [])
 ```
-Only the first CIDR for each IP family will be used; all others will be ignored.
+At this stage the addresses will be validated to confirm that there is only single IPv4 CIDR and a IPv6 CIDR provided. All others will be logged and ignored.
 
 The cloud_cidr_allocator will be updated to support allocating from multiple CIDRs. The route_controller will be updated to create routes for multiple CIDRs.
+
+### Apiserver considerations
+
+#### Multiple advertise-address configuration
+
+The existing "--advertise-address" option for the [apiserver](https://kubernetes.io/docs/reference/command-line-tools-reference/kube-apiserver/) will be modified to support multiple IPs from a comma-separated list (rather than a single IP).
+
+```
+  --advertise-address  ipSlice   (IPs, in a comma separated list, Default: [])
+```
+At this stage the addresses will be validated to confirm that there is only single IPv4 and a IPv6 address provided. All others will be logged and ignored.
+
+This change will also result in the creation of a second default kubernetes service of `kubernetes6.svc.default.cluster.local` which will map to the IPv6 address that's specified in the `--advertise-address` option.
+
+If an IPv6 `--advertise-address` has been specificed then the following environment variables will be avaiable in each POD
+```
+KUBERNETES6_PORT=tcp://<IPv6 address from --advertise-address>:443
+KUBERNETES6_PORT_443_TCP=tcp://<IPv6 address from --advertise-address>:443
+KUBERNETES6_PORT_443_TCP_ADDR=<IPv6 address from --advertise-address>
+KUBERNETES6_PORT_443_TCP_PORT=443
+KUBERNETES6_PORT_443_TCP_PROTO=tcp
+KUBERNETES6_SERVICE_HOST=`<IPv6 address from --advertise-address>`
+KUBERNETES6_SERVICE_PORT=443
+KUBERNETES6_SERVICE_PORT_HTTPS=443
+```
+
+In addition, the following will be added to /etc/resolv.conf
+
+```
+<IPv6 address from --advertise-address>  kubernetes6.svc.default.cluster.local
+```
+
+### Pod containerPort considerations
+
+### Multiple containerPort configuration
+
+A field will be added to the Pod specification to determine which address-families you want the Pod to listen on. For example:
+
+```
+    spec:
+      containers:
+      - name: nginx
+        image: nginx
+        ports:
+        - containerPort: 443
+          addressFamily: ipv6
+        - containerPort: 80
+```
+If the addressFamily field is not specified than it will default to IPv4. The endpoint controller will only create endpoints for the target addressFamily. This means that if you publish an IPv4 service that label selects Pods with ports that only have an IPv6 address family then the service will not have any valid endpoints.
 
 ### Container Environment Variables
 
