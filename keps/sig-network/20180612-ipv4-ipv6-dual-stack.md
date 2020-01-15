@@ -523,7 +523,7 @@ The [NGINX ingress controller](https://github.com/kubernetes/ingress-nginx/blob/
 
 ### Load Balancer Operation
 
-As noted above, External load balancers that rely on Kubernetes services for load balancing functionality will only work with the IP family that matches the IP family of the cluster's service CIDR. The servie address-family binding is going to ensure that endpoints are matching the same-family as NodePorts however we may need an additional field to pass to the cloud provide to desinate the address-family type.
+As noted above, External load balancers that rely on Kubernetes services for load balancing functionality will only work with the IP family that matches the IP family of the cluster's service CIDR. The service address-family binding is going to ensure that endpoints are matching the same-family as NodePorts however we may need an additional field to pass to the cloud provide to desinate the address-family type.
 
 #### Type ClusterIP
 
